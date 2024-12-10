@@ -31,6 +31,8 @@ class PID {
     double integral;           // Accumulated integral term
     double previousError;      // Error from the previous step
     unsigned long lastUpdate; // Time of the last update
+    double previousDerivativeAvg;
+    const unsigned long derivativeAvgCount = 50;
   
   public:
     double kp, ki, kd;         // PID constants
@@ -42,6 +44,7 @@ class PID {
       this->maxOutput = maxOutput;
       this->integral = 0;
       this->previousError = 0;
+      this->previousDerivativeAvg = 0;
       this->lastUpdate = millis();
     }
 
@@ -49,13 +52,8 @@ class PID {
     double compute(double setpoint, double currentValue) {
       double dt = (millis() - this->lastUpdate) / 1000.0;
       this->lastUpdate = millis();
-      
-      //double dt = 0.1;
-      Serial.print(" | dt: ");
-      Serial.print(dt);
 
       if (dt == 0) {
-        Serial.print("is zero!");
         dt = 0.0001;
       }
       
@@ -67,30 +65,31 @@ class PID {
 
       // Integral term
       this->integral += error * dt;
-      // this->integral = constrain(this->integral, -250, 250); // Adjust limits as needed
-      double integralTerm = this->ki * this->integral;
-
-      Serial.print(" | integral: ");
-      Serial.print(this->integral);
+      double integralTerm = constrain(this->ki * this->integral, -this->maxOutput, this->maxOutput);
 
       // Derivative term
       double derivative = (error - this->previousError) / dt;
-      double derivativeTerm = this->kd * derivative;
-      // derivativeTerm = constrain(derivativeTerm, -150, 150); // Adjust limits as needed
 
-      Serial.print(" | derivative: ");
-      Serial.print(derivativeTerm);
+      double derivativeAvg = (derivativeAvgCount * previousDerivativeAvg + derivative) / (derivativeAvgCount + 1);
+
+      this->previousDerivativeAvg = derivativeAvg;
+      
+      double derivativeTerm = this->kd * derivativeAvg;
 
       // Calculate output
       double output = proportional + integralTerm + derivativeTerm + 90.0;
 
-      Serial.print(" | output: ");
-      Serial.print(output);
-
       // Clamp output
       output = constrain(output, this->minOutput, this->maxOutput);
 
-
+      Serial.print(" | ");
+      Serial.print(proportional);
+      Serial.print(" + ");
+      Serial.print(integralTerm);
+      Serial.print(" + ");
+      Serial.print(derivativeTerm);
+      Serial.print(" = ");
+      Serial.print(output);
 
       // Store current error for next derivative calculation
       this->previousError = error;
@@ -144,12 +143,6 @@ double getBallDistance_mm() {
     return last_dist;
   }
 
-  //while (!NewDataReady) {
-  //  sensor_vl53l4cd_sat.VL53L4CD_CheckForDataReady(&NewDataReady);
-  //  Serial.println("Not receiving data");
-  //}
-  //Serial.println("Received data");
-
   // Clear hardware interrupt to prepare for the next measurement
   sensor_vl53l4cd_sat.VL53L4CD_ClearInterrupt();
 
@@ -181,30 +174,24 @@ double readPIDParameters(double& kp, double& ki, double& kd) {
 }
 
 double getReferenceDistance_mm() {
-  unsigned long current_time = millis();
+  unsigned long currentTime = millis();
 
-  static unsigned long last_update = 0;
-  static double last_valid_distance = 0; // Use double for precision
+  static unsigned long lastUpdate = 0;
+  static double lastValidDistanceCm = 0;
+  const double windowSize = 100;
 
-  if (current_time - last_update > MEASUREMENT_INTERVAL_MS) {
-    double distance_cm = distanceSensor.measureDistanceCm(); // Use double for distance
+  if (currentTime - lastUpdate > MEASUREMENT_INTERVAL_MS) {
+    unsigned long distanceCm = distanceSensor.measureDistanceCm(); 
 
-    if (distance_cm > 0) {
-      if (last_valid_distance > 0) {
-        last_valid_distance = (last_valid_distance + distance_cm) / 2.0;
-      } else {
-        last_valid_distance = distance_cm;
-      }
+    if (distanceCm > 0) {
+      lastValidDistanceCm = (windowSize * lastValidDistanceCm + distanceCm) / (windowSize + 1);
     }
-
-    last_update = current_time;
+    
+    lastUpdate = currentTime;
   }
 
-  // Return distance in millimeters as a double
-  return (last_valid_distance > 0) ? last_valid_distance * 10.0 : 0.0;
+  return round(lastValidDistanceCm * 10);
 }
-
-
 
 void loop() {
   double kp, ki, kd;
@@ -221,18 +208,9 @@ void loop() {
   SerialPort.print(" kd: ");
   SerialPort.print(kd);
   
-  //ref_distance_mm = getReferenceDistance_mm();
+  ref_distance_mm = getReferenceDistance_mm();
   ball_distance_mm = getBallDistance_mm();
   platform_angle_deg = pid.compute(ref_distance_mm, ball_distance_mm);
-
-  /*
-  if (platform_angle_deg > 180) {
-    platform_angle_deg = 180;
-  }
-  if (platform_angle_deg < 0) {
-    platform_angle_deg = 0;
-  }
-  */
 
   SerialPort.print(" | Reference Distance: ");
   SerialPort.print(ref_distance_mm);
